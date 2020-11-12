@@ -1,0 +1,31 @@
+<launch>
+
+    <node pkg    = "required_files"
+          type   = "stereo_to_depth.py"
+          name   = "stereo_to_depth_node"
+          args   = "280"
+          output = "screen"
+          if     = "true"/>
+
+    <node pkg    = "required_files"
+          type   = "depth_to_cloud.py"
+          name   = "depth_to_cloud_node"
+          args   = ""
+          output = "screen"
+          if     = "true"/>
+
+    <node pkg    = "required_files"
+          type   = "change_depth_rate.py"
+          name   = "change_depth_rate_node"
+          args   = "corredor"
+          output = "screen"
+          if     = "true"/>
+
+    <node pkg    = "required_files"
+          type   = "output_to_world.py"
+          name   = "output_to_world_node"
+          args   = "corredor"
+          output = "screen"
+          if     = "true"/>
+
+</launch>
