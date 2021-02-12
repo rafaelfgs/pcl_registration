@@ -2,7 +2,8 @@
 
 import rospy
 import numpy
-import struct
+import cv2
+from time import time
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Point32
 from sensor_msgs.msg import CameraInfo, CompressedImage, Image
@@ -29,6 +30,10 @@ class Depth2Cloud:
     
     def read_params(self):
         
+        self.prefix = rospy.get_param("~prefix", "d435i")
+        
+        self.image_size = int(rospy.get_param("~image_size", "480"))
+        
         self.min_range = int(1000 * float(rospy.get_param("~min_range", "0.001")))
         self.max_range = int(1000 * float(rospy.get_param("~max_range", "10.0")))
         
@@ -41,29 +46,22 @@ class Depth2Cloud:
     
     def topics_init(self):
         
-        rospy.Subscriber("/rgb/image_raw",              Image,           self.callback_img_rgb)
-        rospy.Subscriber("/depth/image_raw",            Image,           self.callback_img_depth)
-        rospy.Subscriber("/rgb/image_raw/compressed",   CompressedImage, self.callback_cimg_rgb)
-        rospy.Subscriber("/depth/image_raw/compressed", CompressedImage, self.callback_cimg_depth)
-        rospy.Subscriber("/rgb/camera_info",            CameraInfo,      self.callback_info_rgb)
-        rospy.Subscriber("/depth/camera_info",          CameraInfo,      self.callback_info_depth)
+        rospy.Subscriber("/" + self.prefix + "/aligned_depth_to_color/image_raw",                 Image,           self.callback_img_depth)
+#        rospy.Subscriber("/" + self.prefix + "/aligned_depth_to_color/image_raw/compressedDepth", CompressedImage, self.callback_cimg_depth)
+        rospy.Subscriber("/" + self.prefix + "/aligned_depth_to_color/camera_info",               CameraInfo,      self.callback_info_depth)
+        rospy.Subscriber("/" + self.prefix + "/color/image_raw",                                  Image,           self.callback_img_color)
+        rospy.Subscriber("/" + self.prefix + "/color/image_raw/compressed",                       CompressedImage, self.callback_cimg_color)
+        rospy.Subscriber("/" + self.prefix + "/color/camera_info",                                CameraInfo,      self.callback_info_color)
         
-        self.pub = rospy.Publisher("/cloud/points", PointCloud, queue_size=10)
+        self.pub = rospy.Publisher("/" + self.prefix + "/cloud/points", PointCloud, queue_size=10)
     
     
     
     def wait_loop(self):
         
-        rate = rospy.Rate(10)
-        t = 0.0
-        
+        rospy.loginfo("Waiting for depth image publications...")
+        rate = rospy.Rate(1000)
         while not all(self.callback_bool) and not rospy.is_shutdown():
-            
-            if t >= 1.0:
-                t = 0.0;
-                rospy.loginfo("Waiting for image publications...")
-            else:
-                t += 0.1
             rate.sleep()
         
         if all(self.callback_bool):
@@ -74,79 +72,91 @@ class Depth2Cloud:
     
     def cloud_compute(self):
         
+        global x,y,z,rgb,msg
+        
         rate = rospy.Rate(self.freq)
         
         while not rospy.is_shutdown():
             
-            rgb = self.img_rgb
-            depth = self.img_depth
-            stamp = rospy.Time.from_sec(max([self.stamp_rgb, self.stamp_depth]))
-                
-            h = len(depth)
-            w = len(depth[0])
+            t = time()
             
-            z_depth = 1e-3 * depth.flatten()
+            if len(self.img_depth[0]) > self.image_size:
+                k_depth = 1.0 * self.image_size / len(self.img_depth[0])
+                h_depth = int(k_depth * len(self.img_depth))
+                w_depth = self.image_size
+                fx_depth = k_depth * self.fx_depth
+                fy_depth = k_depth * self.fy_depth
+                img_depth = cv2.resize(self.img_depth, (w_depth, h_depth), interpolation=cv2.INTER_NEAREST)
+            else:
+                h_depth = len(self.img_depth)
+                w_depth = len(self.img_depth[0])
+                fx_depth = self.fx_depth
+                fy_depth = self.fy_depth
+                img_depth = self.img_depth
+            
+            if len(self.img_color[0]) > self.image_size:
+                k_color = 1.0 * self.image_size / len(self.img_color[0])
+                h_color = int(k_color * len(self.img_color))
+                w_color = self.image_size
+                fx_color = k_color* self.fx_color
+                fy_color = k_color * self.fy_color
+                img_color = cv2.resize(self.img_color, (w_color, h_color), interpolation=cv2.INTER_NEAREST)
+            else:
+                h_color = len(self.img_color)
+                w_color = len(self.img_color[0])
+                fx_color = self.fx_color
+                fy_color = self.fy_color
+                img_color = self.img_color
+            
+            stamp = rospy.Time.from_sec(max([self.stamp_color, self.stamp_depth]))
+            
+            z_depth = 1e-3 * img_depth.flatten()
             z_depth[z_depth==0.0] = -1.0
             
-            i_depth = numpy.arange(0,h*w) / w
-            j_depth = numpy.arange(0,h*w) % w
+            i_depth = numpy.arange(0, h_depth*w_depth) / w_depth
+            j_depth = numpy.arange(0, h_depth*w_depth) % w_depth
             
-            u_depth = j_depth - w / 2.0 - 0.5
-            v_depth = i_depth - h / 2.0 - 0.5
+            u_depth = j_depth - w_depth / 2.0 - 0.5
+            v_depth = i_depth - h_depth / 2.0 - 0.5
             
-            x_depth = u_depth * z_depth / self.fx_depth
-            y_depth = v_depth * z_depth / self.fy_depth
+            x_depth = u_depth * z_depth / fx_depth
+            y_depth = v_depth * z_depth / fy_depth
             
-            u_rgb = self.fx_rgb * x_depth / z_depth
-            v_rgb = self.fy_rgb * y_depth / z_depth
-            i_rgb = (v_rgb + h / 2.0 + 1.0).astype(int)
-            j_rgb = (u_rgb + w / 2.0 + 1.0).astype(int)
+            u_color = fx_color * x_depth / z_depth
+            v_color = fy_color * y_depth / z_depth
+            i_color = (v_color + h_color / 2.0 + 1.0).astype(int)
+            j_color = (u_color + w_color / 2.0 + 1.0).astype(int)
             
-            idx = (i_rgb >= 0) & (i_rgb < h) & (j_rgb >= 0) & (j_rgb < w) & \
+            idx = (i_color >= 0) & (i_color < h_color) & (j_color >= 0) & (j_color < w_color) & \
                   (z_depth > 1e-3*self.min_range) & (z_depth < 1e-3*self.max_range)
             
             x = x_depth[idx]
             y = y_depth[idx]
             z = z_depth[idx]
-            n = len(z)
             
-            color_rgb = rgb.reshape(h*w,3)[idx].astype(int)
-            color_hex = (color_rgb[:,0]<<16) + (color_rgb[:,1]<<8) + (color_rgb[:,2])
+            rgb = img_color.reshape(h_color*w_color, 3)[idx].astype(int)
             
             msg = PointCloud()
             msg.header.seq += 1
             msg.header.stamp = stamp
             msg.header.frame_id = self.frame_id
-            msg.channels = [ChannelFloat32()]
-            msg.channels[0].name = "rgb" #"intensity"
-            msg.channels[0].values = [0.0] * n
             
-            x = x_depth[idx]
-            y = y_depth[idx]
-            z = z_depth[idx]
-            n = len(z)
+            msg.points = [array2point(x[k],y[k],z[k]) for k in range(len(z))]
             
-            msg.points = [None] * n
+            msg.channels = [ChannelFloat32(),ChannelFloat32(),ChannelFloat32()]
+            msg.channels[0].name = "r"
+            msg.channels[1].name = "g"
+            msg.channels[2].name = "b"
+            msg.channels[0].values = 1.0 * rgb[:,0] / 255
+            msg.channels[1].values = 1.0 * rgb[:,1] / 255
+            msg.channels[2].values = 1.0 * rgb[:,2] / 255
             
-            for k in range(n):
-                
-                msg.points[k] = Point32()
-                msg.points[k].x = x[k]
-                msg.points[k].y = y[k]
-                msg.points[k].z = z[k]
-                
-                color_float = struct.unpack("f", struct.pack("i", color_hex[k]))[0]
-                msg.channels[0].values[k] = color_float
+            rospy.loginfo("Cloud computed in %.0fms...", 1000*(time()-t))
             
             self.pub.publish(msg)
             rate.sleep()
     
     
-    
-    def callback_img_rgb(self, msg):
-        self.img_rgb = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        self.stamp_rgb = msg.header.stamp.to_sec()
-        self.callback_bool[0] = True
     
     def callback_img_depth(self, msg):
         self.img_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
@@ -154,26 +164,40 @@ class Depth2Cloud:
         self.frame_id = msg.header.frame_id
         self.callback_bool[1] = True
     
-    def callback_cimg_rgb(self, msg):
-        self.img_rgb = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        self.stamp_rgb = msg.header.stamp.to_sec()
-        self.callback_bool[0] = True
-    
-    def callback_cimg_depth(self, msg):
-        self.img_depth = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        self.stamp_depth = msg.header.stamp.to_sec()
-        self.frame_id = msg.header.frame_id
-        self.callback_bool[1] = True
-    
-    def callback_info_rgb(self, msg):
-        self.fx_rgb = msg.K[0]
-        self.fy_rgb = msg.K[4]
-        self.callback_bool[2] = True
+#    def callback_cimg_depth(self, msg):
+#        self.img_depth = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
+#        self.stamp_depth = msg.header.stamp.to_sec()
+#        self.frame_id = msg.header.frame_id
+#        self.callback_bool[1] = True
     
     def callback_info_depth(self, msg):
         self.fx_depth = msg.K[0] * 1.5
         self.fy_depth = msg.K[4] * 1.5
         self.callback_bool[3] = True
+    
+    def callback_img_color(self, msg):
+        self.img_color = self.bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
+        self.stamp_color = msg.header.stamp.to_sec()
+        self.callback_bool[0] = True
+    
+    def callback_cimg_color(self, msg):
+        self.img_color = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="rgb8")
+        self.stamp_color = msg.header.stamp.to_sec()
+        self.callback_bool[0] = True
+    
+    def callback_info_color(self, msg):
+        self.fx_color = msg.K[0]
+        self.fy_color = msg.K[4]
+        self.callback_bool[2] = True
+
+
+
+def array2point(x,y,z):
+    p = Point32()
+    p.x = x
+    p.y = y
+    p.z = z
+    return p
 
 
 

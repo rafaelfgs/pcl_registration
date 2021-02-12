@@ -4,7 +4,7 @@ import rospy
 import numpy
 import cv2
 import tf
-from copy import copy
+from time import time
 from math import tan, pi
 from cv_bridge import CvBridge
 from std_msgs.msg import Header
@@ -34,7 +34,7 @@ class Stereo2Depth:
         
         self.show_window = rospy.get_param("~show_window", "False")
         
-        self.frame_id = rospy.get_param("~frame_id", "depth_optical_frame")
+        self.prefix = rospy.get_param("~prefix", "t265")
         
         self.image_size = int(rospy.get_param("~image_size", "320"))
         self.min_range = int(1000 * float(rospy.get_param("~min_range", "0.001")))
@@ -56,32 +56,25 @@ class Stereo2Depth:
     
     def topics_init(self):
         
-        rospy.Subscriber("/left/image_raw",             Image,           self.callback_img_left)
-        rospy.Subscriber("/right/image_raw",            Image,           self.callback_img_right)
-        rospy.Subscriber("/left/image_raw/compressed",  CompressedImage, self.callback_cimg_left)
-        rospy.Subscriber("/right/image_raw/compressed", CompressedImage, self.callback_cimg_right)
-        rospy.Subscriber("/left/camera_info",           CameraInfo,      self.callback_info_left)
-        rospy.Subscriber("/right/camera_info",          CameraInfo,      self.callback_info_right)
+        rospy.Subscriber("/" + self.prefix + "/fisheye1/image_raw",            Image,           self.callback_img_left)
+        rospy.Subscriber("/" + self.prefix + "/fisheye2/image_raw",            Image,           self.callback_img_right)
+        rospy.Subscriber("/" + self.prefix + "/fisheye1/image_raw/compressed", CompressedImage, self.callback_cimg_left)
+        rospy.Subscriber("/" + self.prefix + "/fisheye2/image_raw/compressed", CompressedImage, self.callback_cimg_right)
+        rospy.Subscriber("/" + self.prefix + "/fisheye1/camera_info",          CameraInfo,      self.callback_info_left)
+        rospy.Subscriber("/" + self.prefix + "/fisheye2/camera_info",          CameraInfo,      self.callback_info_right)
         
-        self.pub_depth_image = rospy.Publisher("/depth/image_raw",   Image,      queue_size=10)
-        self.pub_rgb_image   = rospy.Publisher("/rgb/image_raw",     Image,      queue_size=10)
-        self.pub_depth_info  = rospy.Publisher("/depth/camera_info", CameraInfo, queue_size=10)
-        self.pub_rgb_info    = rospy.Publisher("/rgb/camera_info",   CameraInfo, queue_size=10)
+        self.pub_depth_image = rospy.Publisher("/" + self.prefix + "/aligned_depth_to_color/image_raw",   Image,      queue_size=10)
+        self.pub_color_image = rospy.Publisher("/" + self.prefix + "/color/image_raw",                    Image,      queue_size=10)
+        self.pub_depth_info  = rospy.Publisher("/" + self.prefix + "/aligned_depth_to_color/camera_info", CameraInfo, queue_size=10)
+        self.pub_color_info  = rospy.Publisher("/" + self.prefix + "/color/camera_info",                  CameraInfo, queue_size=10)
     
     
     
     def wait_loop(self):
         
-        rate = rospy.Rate(10)
-        t = 0.0
-        
+        rospy.loginfo("Waiting for stereo image publications...")
+        rate = rospy.Rate(1000)
         while not all(self.callback_bool) and not rospy.is_shutdown():
-            
-            if t >= 1.0:
-                t = 0.0;
-                rospy.loginfo("Waiting for image publications...")
-            else:
-                t += 0.1
             rate.sleep()
         
         if all(self.callback_bool):
@@ -160,6 +153,8 @@ class Stereo2Depth:
         
         while not rospy.is_shutdown():
             
+            t = time()
+            
             self.center_undistorted = {"left" : cv2.remap(src = self.img_left,
                                                 map1 = self.undistort_rectify["left"][0],
                                                 map2 = self.undistort_rectify["left"][1],
@@ -175,38 +170,40 @@ class Stereo2Depth:
             self.depth[self.depth < self.min_range] = 0.0
             self.depth[self.depth > self.max_range] = 0.0
             
-            self.rgb = cv2.cvtColor(self.center_undistorted["left"][:,self.m:], cv2.COLOR_GRAY2RGB)
+            self.color = cv2.cvtColor(self.center_undistorted["left"][:,self.m:], cv2.COLOR_GRAY2RGB)
             
             msg_depth = self.bridge.cv2_to_imgmsg(self.depth, encoding="passthrough")
-            msg_rgb = self.bridge.cv2_to_imgmsg(self.rgb, encoding="rgb8")
+            msg_color = self.bridge.cv2_to_imgmsg(self.color, encoding="rgb8")
             
             msg_header.seq += 1
             msg_header.stamp = rospy.Time.from_sec(max([self.stamp_left, self.stamp_right]))
-            msg_header.frame_id = self.frame_id
+            msg_header.frame_id = self.prefix + "_aligned_depth_to_color_optical_frame"
             
             msg_depth.header = msg_header
-            msg_rgb.header = msg_header
+            msg_color.header = msg_header
             msg_info.header = msg_header
             
             self.pub_depth_image.publish(msg_depth)
             self.pub_depth_info.publish(msg_info)
-            self.pub_rgb_image.publish(msg_rgb)
-            self.pub_rgb_info.publish(msg_info)
+            self.pub_color_image.publish(msg_color)
+            self.pub_color_info.publish(msg_info)
             
             if self.publish_tf:
                 self.msg_tf = tf.TransformBroadcaster()
                 self.msg_tf.sendTransform( (0.0, 0.0, 0.0),
                                            (0.0, 0.0, 0.0, 1.0),
                                            rospy.Time.from_sec(self.stamp_left),
-                                           self.frame_id,
+                                           self.prefix + "_aligned_depth_to_color_optical_frame",
                                            self.child_frame_id)
             
             if self.show_window:
-                img_window = numpy.hstack((self.rgb[:,:,0], numpy.uint8(255.0*self.depth/numpy.max(self.depth))))
+                img_window = numpy.hstack((self.color[:,:,0], numpy.uint8(255.0*self.depth/numpy.max(self.depth))))
                 cv2.imshow("Depth Results", img_window)
                 cv2.waitKey(1)
                 if cv2.getWindowProperty("Depth Results", cv2.WND_PROP_VISIBLE) < 1:
                     self.mode = False
+            
+            rospy.loginfo("Depth computed in %.0fms...", 1000*(time()-t))
             
             rate.sleep()
     
@@ -217,7 +214,7 @@ class Stereo2Depth:
         self.msg_tf.sendTransform( (0.0, 0.0, 0.0),
                                    (0.0, 0.0, 0.0, 1.0),
                                    self.stamp_left,
-                                   self.frame_id,
+                                   self.prefix + "_aligned_depth_to_color_optical_frame",
                                    self.child_frame_id)
     
     
@@ -225,7 +222,7 @@ class Stereo2Depth:
     def callback_img_left(self, msg):
         self.img_left = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
         self.stamp_left = msg.header.stamp.to_sec()
-        self.child_frame_id = copy(msg.header.frame_id)
+        self.child_frame_id = msg.header.frame_id
         self.callback_bool[0] = True
     
     def callback_img_right(self, msg):
@@ -236,7 +233,7 @@ class Stereo2Depth:
     def callback_cimg_left(self, msg):
         self.img_left = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
         self.stamp_left = msg.header.stamp.to_sec()
-        self.child_frame_id = copy(msg.header.frame_id)
+        self.child_frame_id = msg.header.frame_id
         self.callback_bool[0] = True
     
     def callback_cimg_right(self, msg):

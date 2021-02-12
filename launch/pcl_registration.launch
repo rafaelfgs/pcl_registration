@@ -1,63 +1,64 @@
 <launch>
 
 
-    <node pkg = "pcl_registration"
+    <arg name = "prefix"      default = "t265"/>
+    <arg name = "stereo"      default = "true"/>
+    <arg name = "compressed"  default = "false"/>
+
+
+    <node if = "$(arg stereo)"
+          pkg = "pcl_registration"
           type = "stereo_to_depth.py"
           name = "stereo_to_depth_node"
           output = "screen"
-          if = "true"
           args = "">
 
-        <param name ="show_window" value = "false"/>
-        <param name ="frame_id"    value = "realsense_depth_optical_frame"/>
-        <param name ="min_range"   value = "1.0"/>
-        <param name ="max_range"   value = "5.0"/>
-        <param name ="freq"        value = "5.0"/>
-
-        <remap from ="/left/image_raw/compressed"  to = "/realsense/fisheye1/image_raw/compressed"/>
-        <remap from ="/right/image_raw/compressed" to = "/realsense/fisheye2/image_raw/compressed"/>
-        <remap from ="/left/camera_info"           to = "/realsense/fisheye1/camera_info"/>
-        <remap from ="/right/camera_info"          to = "/realsense/fisheye2/camera_info"/>
-        <remap from ="/rgb/image_raw"              to = "/realsense/rgb/image_raw"/>
-        <remap from ="/depth/image_raw"            to = "/realsense/depth/image_raw"/>
-        <remap from ="/rgb/camera_info"            to = "/realsense/rgb/camera_info"/>
-        <remap from ="/depth/camera_info"          to = "/realsense/depth/camera_info"/>
-        <remap from ="/cloud/points"               to = "/realsense/cloud/points"/>
+        <param name = "show_window" value = "false"/>
+        <param name = "prefix"      value = "$(arg prefix)"/>
+        <param name = "image_size"  value = "320"/>
+        <param name = "min_range"   value = "1.0"/>
+        <param name = "max_range"   value = "5.0"/>
+        <param name = "publish_tf"  value = "True"/>
+        <param name = "freq"        value = "5.0"/>
 
     </node>
 
 
-    <node pkg = "pcl_registration"
+    <node if = "$(arg compressed)"
+          pkg  = "image_transport"
+          type = "republish"
+          name = "decompress_node"
+          output = "screen"
+          args = "compressedDepth in:=/d435i/aligned_depth_to_color/image_raw
+                  raw out:=/d435i/aligned_depth_to_color/image_raw">
+    </node>
+
+
+    <node if = "true"
+          pkg = "pcl_registration"
           type = "depth_to_cloud.py"
           name = "depth_to_cloud_node"
           output = "screen"
-          if = "true"
-          args = "">
+          args = "" >
 
-        <param name ="min_range" value = "1.0"/>
-        <param name ="max_range" value = "4.0"/>
-        <param name ="freq"      value = "2.0"/>
-
-        <remap from ="/rgb/image_raw"     to = "/realsense/rgb/image_raw"/>
-        <remap from ="/depth/image_raw"   to = "/realsense/depth/image_raw"/>
-        <remap from ="/rgb/camera_info"   to = "/realsense/rgb/camera_info"/>
-        <remap from ="/depth/camera_info" to = "/realsense/depth/camera_info"/>
-        <remap from ="/cloud/points"      to = "/realsense/cloud/points"/>
+        <param name = "prefix"      value = "$(arg prefix)"/>
+        <param name = "image_size"  value = "320"/>
+        <param name = "min_range"   value = "1.0"/>
+        <param name = "max_range"   value = "4.0"/>
+        <param name = "freq"        value = "5.0"/>
 
     </node>
 
 
-    <node pkg = "pcl_registration"
+    <node if = "false"
+          pkg = "pcl_registration"
           type = "cloud_aggregator.py"
           name = "cloud_aggregator_node"
           output = "screen"
-          if = "true"
-          args = "">
+          args = "" >
 
-        <param name ="fixed_frame" value = "realsense_odom_frame"/>
-        <param name ="freq"        value = "0.2"/>
-
-        <remap from ="/cloud/points" to = "/realsense/cloud/points"/>
+        <param name = "fixed_frame" value = "$(arg prefix)_odom_frame"/>
+        <param name = "freq"        value = "0.2"/>
 
     </node>
 
