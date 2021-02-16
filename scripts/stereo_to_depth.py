@@ -2,9 +2,10 @@
 
 import rospy
 import numpy
+import time
+import sys
 import cv2
 import tf
-from time import time
 from math import tan, pi
 from cv_bridge import CvBridge
 from std_msgs.msg import Header
@@ -24,7 +25,7 @@ class Stereo2Depth:
         self.topics_init()
         self.wait_loop()
         
-        if all(self.callback_bool):
+        if all(self.callback_ready):
             self.depth_init()
             self.depth_compute()
     
@@ -32,15 +33,13 @@ class Stereo2Depth:
     
     def read_params(self):
         
-        self.show_window = rospy.get_param("~show_window", "False")
+        self.show_window = rospy.get_param("~show_window", False)
         
         self.prefix = rospy.get_param("~prefix", "t265")
         
         self.image_size = int(rospy.get_param("~image_size", "320"))
-        self.min_range = int(1000 * float(rospy.get_param("~min_range", "0.001")))
-        self.max_range = int(1000 * float(rospy.get_param("~max_range", "10.0")))
         
-        self.publish_tf = rospy.get_param("~publish_tf", "True")
+        self.publish_tf = rospy.get_param("~publish_tf", True)
         
         self.freq = float(rospy.get_param("~freq", 0.6e6/self.image_size**2))
         
@@ -49,8 +48,10 @@ class Stereo2Depth:
                               [-0.0054188510403,  0.000354899209924,  0.999985337257000]])
         self.T = numpy.array( [-0.0641773045063,  0.000311704527121, -0.000004761783202])
         
+        self.callback_ready = [False, False, False, False]
+        self.code_ready = True
+        
         self.bridge = CvBridge()
-        self.callback_bool = [False, False, False, False]
     
     
     
@@ -72,14 +73,15 @@ class Stereo2Depth:
     
     def wait_loop(self):
         
-        rospy.loginfo("Waiting for stereo image publications...")
-        rate = rospy.Rate(1000)
-        while not all(self.callback_bool) and not rospy.is_shutdown():
-            rate.sleep()
+        sys.stdout.write("Waiting for stereo image publication...\n")
+        sys.stdout.flush()
         
-        if all(self.callback_bool):
-            rospy.loginfo("Stereo images subscribed!")
-            rospy.loginfo("Publishing depth image in %.1fHz...", self.freq)
+        while not rospy.is_shutdown() and not all(self.callback_ready):
+            time.sleep(1e-3)
+        
+        if all(self.callback_ready):
+            sys.stdout.write("Stereo image subscribed. Publishing RGB-D image at %.1fHz\n" % self.freq)
+            sys.stdout.flush()
     
     
     
@@ -153,7 +155,12 @@ class Stereo2Depth:
         
         while not rospy.is_shutdown():
             
-            t = time()
+            while not all(self.callback_ready):
+                time.sleep(1e-3)
+            
+            t = time.time()
+            
+            self.code_ready = False
             
             self.center_undistorted = {"left" : cv2.remap(src = self.img_left,
                                                 map1 = self.undistort_rectify["left"][0],
@@ -167,8 +174,7 @@ class Stereo2Depth:
             self.disparity = self.stereo.compute(self.center_undistorted["left"], self.center_undistorted["right"]) / 16.0
             
             self.depth = numpy.uint16(self.f * 1000.0*abs(self.T[0]) / (self.disparity[:,self.m:]+0.001))
-            self.depth[self.depth < self.min_range] = 0.0
-            self.depth[self.depth > self.max_range] = 0.0
+            self.depth[(self.depth > 10000) | (self.depth < 100)] = 0.0
             
             self.color = cv2.cvtColor(self.center_undistorted["left"][:,self.m:], cv2.COLOR_GRAY2RGB)
             
@@ -176,7 +182,7 @@ class Stereo2Depth:
             msg_color = self.bridge.cv2_to_imgmsg(self.color, encoding="rgb8")
             
             msg_header.seq += 1
-            msg_header.stamp = rospy.Time.from_sec(max([self.stamp_left, self.stamp_right]))
+            msg_header.stamp = self.stamp
             msg_header.frame_id = self.prefix + "_aligned_depth_to_color_optical_frame"
             
             msg_depth.header = msg_header
@@ -192,7 +198,7 @@ class Stereo2Depth:
                 self.msg_tf = tf.TransformBroadcaster()
                 self.msg_tf.sendTransform( (0.0, 0.0, 0.0),
                                            (0.0, 0.0, 0.0, 1.0),
-                                           rospy.Time.from_sec(self.stamp_left),
+                                           self.stamp,
                                            self.prefix + "_aligned_depth_to_color_optical_frame",
                                            self.child_frame_id)
             
@@ -203,53 +209,51 @@ class Stereo2Depth:
                 if cv2.getWindowProperty("Depth Results", cv2.WND_PROP_VISIBLE) < 1:
                     self.mode = False
             
-            rospy.loginfo("Depth computed in %.0fms...", 1000*(time()-t))
+            self.callback_ready = [False, False, False, False]
+            self.code_ready = True
+            
+            sys.stdout.write("0: %3dx%3d depth image computed in %.0fms\n" % (self.image_size, self.image_size, 1000*(time.time()-t)))
+            sys.stdout.flush()
             
             rate.sleep()
     
     
     
-    def tf_broadcaster(self):
-        self.msg_tf = tf.TransformBroadcaster()
-        self.msg_tf.sendTransform( (0.0, 0.0, 0.0),
-                                   (0.0, 0.0, 0.0, 1.0),
-                                   self.stamp_left,
-                                   self.prefix + "_aligned_depth_to_color_optical_frame",
-                                   self.child_frame_id)
-    
-    
-    
     def callback_img_left(self, msg):
-        self.img_left = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        self.stamp_left = msg.header.stamp.to_sec()
-        self.child_frame_id = msg.header.frame_id
-        self.callback_bool[0] = True
+        if self.code_ready:
+            self.img_left = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+            self.stamp = msg.header.stamp
+            self.child_frame_id = msg.header.frame_id
+            self.callback_ready[0] = True
     
     def callback_img_right(self, msg):
-        self.img_right = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        self.stamp_right = msg.header.stamp.to_sec()
-        self.callback_bool[1] = True
+        if self.code_ready:
+            self.img_right = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
+            self.callback_ready[1] = True
     
     def callback_cimg_left(self, msg):
-        self.img_left = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        self.stamp_left = msg.header.stamp.to_sec()
-        self.child_frame_id = msg.header.frame_id
-        self.callback_bool[0] = True
+        if self.code_ready:
+            self.img_left = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
+            self.stamp = msg.header.stamp
+            self.child_frame_id = msg.header.frame_id
+            self.callback_ready[0] = True
     
     def callback_cimg_right(self, msg):
-        self.img_right = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        self.stamp_right = msg.header.stamp.to_sec()
-        self.callback_bool[1] = True
+        if self.code_ready:
+            self.img_right = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
+            self.callback_ready[1] = True
     
     def callback_info_left(self, msg):
-        self.K_left = numpy.reshape(msg.K,(3,3))
-        self.D_left = numpy.array(msg.D[0:4])
-        self.callback_bool[2] = True
+        if self.code_ready:
+            self.K_left = numpy.reshape(msg.K,(3,3))
+            self.D_left = numpy.array(msg.D[0:4])
+            self.callback_ready[2] = True
     
     def callback_info_right(self, msg):
-        self.K_right = numpy.reshape(msg.K,(3,3))
-        self.D_right = numpy.array(msg.D[0:4])
-        self.callback_bool[3] = True
+        if self.code_ready:
+            self.K_right = numpy.reshape(msg.K,(3,3))
+            self.D_right = numpy.array(msg.D[0:4])
+            self.callback_ready[3] = True
 
 
 

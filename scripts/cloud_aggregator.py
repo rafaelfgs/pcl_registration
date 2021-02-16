@@ -1,8 +1,10 @@
 #!/usr/bin/python
 
 import rospy
-from copy import copy
-from tf2_msgs.msg import TFMessage
+import time
+import sys
+import tf
+from nav_msgs.msg import Odometry
 from geometry_msgs.msg import Point32
 from sensor_msgs.msg import PointCloud
 from sensor_msgs.msg import ChannelFloat32
@@ -18,160 +20,131 @@ class CloudAggregator:
         rospy.init_node("cloud_aggregator_node", anonymous=True)
         
         self.read_params()
-        self.wait_cloud()
-        self.wait_tfs()
+        self.topics_init()
+        self.wait_loop()
         
-        if all(self.callback_bool):
-            self.cloud_transform()
+        if all(self.callback_ready):
+            self.map_compute()
     
     
     
     def read_params(self):
         
-        self.fixed_frame = rospy.get_param("~fixed_frame", "map")
+        self.prefix = rospy.get_param("~prefix", "d435i")
+        
+        self.tf = [float(x) for x in rospy.get_param("~tf", "0 0 0 0 0 0 1").split(" ")]
+        self.publish_tf = rospy.get_param("~publish_tf", "True")
         
         self.freq = float(rospy.get_param("~freq", "0.2"))
+        self.freq_min = float(rospy.get_param("~freq", "0.04"))
         
-        self.tf_frames = []
-        self.tf_values = []
-        
-        self.callback_bool = [False, False]
+        self.callback_ready = [False, False]
+        self.code_ready = True
     
     
     
-    def wait_cloud(self):
+    def topics_init(self):
         
-        rospy.Subscriber("/cloud/points", PointCloud, self.callback_cloud)
+        rospy.Subscriber("/" + self.prefix + "/cloud/points", PointCloud, self.callback_pcl)
+        rospy.Subscriber("/ekf/odom", Odometry, self.callback_odom)
         
-        rate = rospy.Rate(10)
-        t = 0.0
-        
-        while not self.callback_bool[0] and not rospy.is_shutdown():
-            
-            if t >= 1.0:
-                t = 0.0;
-                rospy.loginfo("Waiting for cloud publications...")
-            else:
-                t += 0.1
-            rate.sleep()
-        
-        if self.callback_bool[0]:
-            rospy.loginfo("Local cloud subscribed!")
+        self.pub = rospy.Publisher("/" + self.prefix + "/cloud/map", PointCloud, queue_size=10)
     
     
     
-    def wait_tfs(self):
-            
-        rospy.Subscriber("/tf",        TFMessage,  self.callback_tf)
-        rospy.Subscriber("/tf_static", TFMessage,  self.callback_tf)
+    def wait_loop(self):
         
-        rate = rospy.Rate(10)
-        t = 0.0
+        sys.stdout.write("Waiting for local cloud publication...\n")
+        sys.stdout.flush()
         
-        while not self.callback_bool[1] and not rospy.is_shutdown():
-            
-            if t >= 1.0:
-                t = 0.0;
-                rospy.loginfo("Listening TF data...")
-            else:
-                t += 0.1
-            rate.sleep()
+        while not rospy.is_shutdown() and not all(self.callback_ready):
+            time.sleep(1e-3)
         
-        if self.callback_bool[1]:
-            rospy.loginfo("Relationship between %s and %s were found!", self.cloud_frame, self.fixed_frame)
-            rospy.loginfo("Publishing global map in %.1fHz...", self.freq)
+        if all(self.callback_ready):
+            sys.stdout.write("Local cloud subscribed.  Publishing map cloud at %.1fHz\n" % self.freq)
+            sys.stdout.flush()
     
     
     
-    def cloud_transform(self):
+    def map_compute(self):
         
-        self.pub_map = rospy.Publisher("/cloud/map", PointCloud, queue_size=10)
+        msg = PointCloud()
+        msg.header.frame_id = self.odom_child_frame
+        msg.channels = [ChannelFloat32(),ChannelFloat32(),ChannelFloat32()]
+        msg.channels[0].name = "r"
+        msg.channels[1].name = "g"
+        msg.channels[2].name = "b"
         
-        p_global = Point32()
-        self.num_points = 0
-            
-        self.map_msg = PointCloud()
-        self.map_msg.header.frame_id = self.fixed_frame
-        self.map_msg.channels = [ChannelFloat32()]
-        self.map_msg.channels[0].name = self.cloud_channels[0].name
-        
-        rate = rospy.Rate(self.freq)
+        T_ros = 1.0/self.freq
+        k_max = 1e3/self.freq_min
         
         while not rospy.is_shutdown():
             
-            t = rospy.Time.now().to_sec()
+            t = time.time()
+            t_ros = rospy.Time.now().to_sec()
             
-            v = (0.0, 0.0, 0.0)
-            q = (0.0, 0.0, 0.0, 1.0)
+            self.code_ready = False
             
-            for k in self.tf_seq:
-                v = vv_sum(qv_mult(self.tf_values[k][1], v), self.tf_values[k][0])
-                q = qq_mult(self.tf_values[k][1], q)
+            if all(self.callback_ready):
             
-            points_temp = self.cloud_points
-            channels_temp = self.cloud_channels
+                p_odom = (self.odom_position.x, self.odom_position.y, self.odom_position.z)
+                q_odom = (self.odom_orientation.x, self.odom_orientation.y, self.odom_orientation.z, self.odom_orientation.w)
+                p_tf = tuple(self.tf[:3])
+                q_tf = tuple(self.tf[3:])
+                
+                p_cloud = pp_sum(qp_mult(q_odom,p_tf),p_odom)
+                q_cloud = qq_mult(q_odom,q_tf)
+                
+                self.map_points = [tuple2point(pp_sum(qp_mult(q_cloud,(p.x,p.y,p.z)),p_cloud)) for p in self.cloud_points]
+                
+                msg.header.seq += 1
+                msg.header.stamp = self.cloud_stamp
+                msg.points += self.map_points
+                msg.channels[0].values += self.cloud_channels[0].values
+                msg.channels[1].values += self.cloud_channels[1].values
+                msg.channels[2].values += self.cloud_channels[2].values
             
-            self.map_msg.header.seq += 1
-            self.map_msg.header.stamp = self.cloud_stamp
+            self.pub.publish(msg)
             
-            for k in range(len(points_temp)):
-                p_local = (points_temp[k].x, points_temp[k].y, points_temp[k].z)
-                p_global.x, p_global.y, p_global.z = vv_sum(qv_mult(q, p_local), v)
-                self.map_msg.points += [copy(p_global)]
+            if self.publish_tf:
+                msg_tf = tf.TransformBroadcaster()
+                msg_tf.sendTransform( tuple(self.tf[:3]),
+                                      tuple(self.tf[3:]),
+                                      self.cloud_stamp,
+                                      self.cloud_frame,
+                                      self.odom_child_frame)
             
-            self.map_msg.channels[0].values += channels_temp[0].values
+            self.callback_ready = [False, False]
+            self.code_ready = True
             
-            self.pub_map.publish(self.map_msg)
+            sys.stdout.write("2: Global map with %d points computed in %.0fms\n" % (len(msg.points), 1000*(time.time()-t)))
+            sys.stdout.flush()
             
-            self.num_points = len(self.map_msg.points)
-            
-            rospy.loginfo("Published map with %d points in %.1f seconds!", self.num_points, rospy.Time.now().to_sec()-t)
-            
-            rate.sleep()
+            k = 0
+            while not rospy.is_shutdown() and rospy.Time.now().to_sec()-t_ros < T_ros and k < k_max:
+                k += 1
+                time.sleep(1e-3)
     
     
     
-    def callback_cloud(self, msg):
-        
-        self.cloud_points = msg.points
-        self.cloud_channels = msg.channels
-        self.cloud_frame = msg.header.frame_id
-        self.cloud_stamp = msg.header.stamp
-        self.callback_bool[0] = True
+    def callback_pcl(self, msg):
+        if self.code_ready:
+            self.cloud_stamp = msg.header.stamp
+            self.cloud_frame = msg.header.frame_id
+            self.cloud_points = msg.points
+            self.cloud_channels = msg.channels
+            self.callback_ready[0] = True
     
     
     
-    def callback_tf(self, msg):
-        
-        for k in range(len(msg.transforms)):
-            
-            tf_frm = [msg.transforms[k].header.frame_id,
-                      msg.transforms[k].child_frame_id]
-            
-            tf_val = [(msg.transforms[k].transform.translation.x,
-                       msg.transforms[k].transform.translation.y,
-                       msg.transforms[k].transform.translation.z),
-                      (msg.transforms[k].transform.rotation.x,
-                       msg.transforms[k].transform.rotation.y,
-                       msg.transforms[k].transform.rotation.z,
-                       msg.transforms[k].transform.rotation.w)]
-            
-            if not tf_frm in self.tf_frames:
-                self.tf_frames += [tf_frm]
-                self.tf_values += [tf_val]
-            else:
-                self.tf_values[self.tf_frames.index(tf_frm)] = tf_val
-        
-        if not self.callback_bool[1]:
-            
-            tf_curr = self.cloud_frame
-            self.tf_seq = []
-            while tf_curr in [x[1] for x in self.tf_frames]:
-                self.tf_seq += [[x[1] for x in self.tf_frames].index(tf_curr)]
-                tf_curr = self.tf_frames[self.tf_seq[-1]][0]
-            
-            if tf_curr == self.fixed_frame:
-                self.callback_bool[1] = True
+    def callback_odom(self, msg):
+        if self.code_ready:
+            self.odom_stamp = msg.header.stamp
+            self.odom_frame = msg.header.frame_id
+            self.odom_child_frame = msg.child_frame_id
+            self.odom_position = msg.pose.pose.position
+            self.odom_orientation = msg.pose.pose.orientation
+            self.callback_ready[1] = True
 
 
 
@@ -188,17 +161,28 @@ def q_conjugate(q):
     x, y, z, w = q
     return -x, -y, -z, w
 
-def qv_mult(q1, v1):
-    q2 = v1 + (0.0,)
+def qp_mult(q1, p1):
+    q2 = p1 + (0.0,)
     return qq_mult(qq_mult(q1, q2), q_conjugate(q1))[:-1]
 
-def vv_sum(v1, v2):
-    x1, y1, z1 = v1
-    x2, y2, z2 = v2
+def pp_sum(p1, p2):
+    x1, y1, z1 = p1
+    x2, y2, z2 = p2
     x = x1 + x2
     y = y1 + y2
     z = z1 + z2
     return x, y, z
+
+def p_conjugate(p):
+    x, y, z = p
+    return -x, -y, -z
+
+def tuple2point(t):
+    p = Point32()
+    p.x = t[0]
+    p.y = t[1]
+    p.z = t[2]
+    return p
 
 
 
