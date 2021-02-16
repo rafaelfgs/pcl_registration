@@ -42,7 +42,7 @@
           args = "" >
 
         <param name = "prefix"      value = "$(arg prefix)"/>
-        <param name = "image_size"  value = "320"/>
+        <param name = "image_size"  value = "240"/>
         <param name = "min_range"   value = "2.0"/>
         <param name = "max_range"   value = "6.0"/>
         <param name = "freq"        value = "1.0"/>
@@ -60,7 +60,7 @@
         <param name = "prefix"      value = "$(arg prefix)"/>
         <param name = "publish_tf"  value = "true"/>
         <param name = "tf"          value = "$(arg tf_odom)"/>
-        <param name = "freq"        value = "0.2"/>
+        <param name = "freq"        value = "0.5"/>
         <param name = "freq_min"    value = "0.1"/>
 
     </node>
