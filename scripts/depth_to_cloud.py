@@ -33,7 +33,7 @@ class Depth2Cloud:
         
         self.prefix = rospy.get_param("~prefix", "d435i")
         
-        self.image_size = int(rospy.get_param("~image_size", "480"))
+        self.image_size = int(rospy.get_param("~image_size", "240"))
         
         self.min_range = int(1000 * float(rospy.get_param("~min_range", "0.1")))
         self.max_range = int(1000 * float(rospy.get_param("~max_range", "9.9")))
@@ -75,7 +75,7 @@ class Depth2Cloud:
     
     
     def cloud_compute(self):
-        
+        global img_depth, img_color
         rate = rospy.Rate(self.freq)
         
         while not rospy.is_shutdown():
@@ -87,10 +87,10 @@ class Depth2Cloud:
             
             self.code_ready = False
             
-            if len(self.img_depth[0]) > self.image_size:
-                k_depth = 1.0 * self.image_size / len(self.img_depth[0])
-                h_depth = int(k_depth * len(self.img_depth))
-                w_depth = self.image_size
+            if len(self.img_depth) > self.image_size:
+                k_depth = 1.0 * self.image_size / len(self.img_depth)
+                h_depth = self.image_size
+                w_depth = int(k_depth * len(self.img_depth[0]))
                 fx_depth = k_depth * self.fx_depth
                 fy_depth = k_depth * self.fy_depth
                 img_depth = cv2.resize(self.img_depth, (w_depth, h_depth), interpolation=cv2.INTER_NEAREST)
@@ -101,10 +101,10 @@ class Depth2Cloud:
                 fy_depth = self.fy_depth
                 img_depth = self.img_depth
             
-            if len(self.img_color[0]) > self.image_size:
-                k_color = 1.0 * self.image_size / len(self.img_color[0])
-                h_color = int(k_color * len(self.img_color))
-                w_color = self.image_size
+            if len(self.img_color) > self.image_size:
+                k_color = 1.0 * self.image_size / len(self.img_color)
+                h_color = self.image_size
+                w_color = int(k_color * len(self.img_color[0]))
                 fx_color = k_color* self.fx_color
                 fy_color = k_color * self.fy_color
                 img_color = cv2.resize(self.img_color, (w_color, h_color), interpolation=cv2.INTER_NEAREST)
