@@ -8,13 +8,13 @@ from sensor_msgs.msg import PointCloud
 
 
 
-class Cloud2File:
+class Map2File:
     
     
     
     def __init__(self):
         
-        rospy.init_node("cloud_to_file_node", anonymous=True)
+        rospy.init_node("map_to_file_node", anonymous=True)
         
         self.prefix = rospy.get_param("~prefix", "d435i")
         self.file_name = rospy.get_param("file_name", "/mnt/WD500/UFMG/DISSERTACAO/bags/registration_cloud.pcd")
@@ -61,4 +61,4 @@ class Cloud2File:
 
 
 if __name__ == "__main__":
-    Cloud2File()
+    Map2File()

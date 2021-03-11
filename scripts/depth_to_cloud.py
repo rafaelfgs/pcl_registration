@@ -44,6 +44,7 @@ class Depth2Cloud:
         self.code_ready = True
         
         self.bridge = CvBridge()
+        self.time = [[0.0, 0.0, 0.0, 0.0], 0.0, 0.0]
     
     
     
@@ -62,20 +63,20 @@ class Depth2Cloud:
     
     def wait_loop(self):
         
-        sys.stdout.write("Waiting for depth image publication...\n")
+        sys.stdout.write("\n")
+        sys.stdout.write("%-17s %.0fp\n"         % ("Image resolution:", self.image_size))
+        sys.stdout.write("%-17s %.1fm ~ %.1fm\n" % ("Depth range:", 1e-3*self.min_range, 1e-3*self.max_range))
+        sys.stdout.write("%-17s %.02fHz\n"       % ("Local cloud rate:", self.freq))
+        sys.stdout.write("Waiting for RGB-D image publication...\n")
         sys.stdout.flush()
         
         while not rospy.is_shutdown() and not all(self.callback_ready):
             time.sleep(1e-3)
-        
-        if all(self.callback_ready):
-            sys.stdout.write("RGB-D  image subscribed. Publishing local cloud at %.1fHz\n" % self.freq)
-            sys.stdout.flush()
     
     
     
     def cloud_compute(self):
-        global img_depth, img_color
+        
         rate = rospy.Rate(self.freq)
         
         while not rospy.is_shutdown():
@@ -83,7 +84,7 @@ class Depth2Cloud:
             while not all(self.callback_ready):
                 time.sleep(1e-3)
             
-            t = time.time()
+            t0 = time.time()
             
             self.code_ready = False
             
@@ -159,55 +160,73 @@ class Depth2Cloud:
             msg.channels[1].values = 1.0 * rgb[:,1] / 255
             msg.channels[2].values = 1.0 * rgb[:,2] / 255
             
-            self.pub.publish(msg)
-            
             self.callback_ready = [False, False, False, False]
             self.code_ready = True
             
-            sys.stdout.write("1: %6d local points computed in %.0fms\n" % (n, 1000*(time.time()-t)))
+            self.time[1] = 1e3*(time.time()-t0)
+            
+            t0 = time.time()
+            self.pub.publish(msg)
+            self.time[2] = 1e3*(time.time()-t0)
+            
+            sys.stdout.write("[CLOUD]: %7d points | Subscribing: %4.0fms | Computing: %4.0fms | Publishing: %4.0fms\n" %
+                             (n, sum(self.time[0]), self.time[1], self.time[2]))
             sys.stdout.flush()
+            
             
             rate.sleep()
     
     
     
     def callback_img_depth(self, msg):
+        t0 = time.time()
         if self.code_ready:
             self.img_depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
             self.stamp_depth = msg.header.stamp.to_sec()
             self.frame_id = msg.header.frame_id
             self.callback_ready[0] = True
+        self.time[0][0] = 1e3*(time.time()-t0)
     
     def callback_img_color(self, msg):
+        t0 = time.time()
         if self.code_ready:
             self.img_color = self.bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
             self.stamp_color = msg.header.stamp.to_sec()
             self.callback_ready[1] = True
+        self.time[0][1] = 1e3*(time.time()-t0)
     
 #    def callback_cimg_depth(self, msg):
+#        t0 = time.time()
 #        if self.code_ready:
 #            self.img_depth = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="passthrough")
 #            self.stamp_depth = msg.header.stamp.to_sec()
 #            self.frame_id = msg.header.frame_id
 #            self.callback_ready[0] = True
+#        self.time[0][0] = 1e3*(time.time()-t0)
     
     def callback_cimg_color(self, msg):
+        t0 = time.time()
         if self.code_ready:
             self.img_color = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="rgb8")
             self.stamp_color = msg.header.stamp.to_sec()
             self.callback_ready[1] = True
+        self.time[0][1] = 1e3*(time.time()-t0)
     
     def callback_info_depth(self, msg):
+        t0 = time.time()
         if self.code_ready:
-            self.fx_depth = msg.K[0] * 1.5
-            self.fy_depth = msg.K[4] * 1.5
+            self.fx_depth = msg.K[0] * 1.0
+            self.fy_depth = msg.K[4] * 1.0
             self.callback_ready[2] = True
+        self.time[0][2] = 1e3*(time.time()-t0)
     
     def callback_info_color(self, msg):
+        t0 = time.time()
         if self.code_ready:
             self.fx_color = msg.K[0]
             self.fy_color = msg.K[4]
             self.callback_ready[3] = True
+        self.time[0][3] = 1e3*(time.time()-t0)
 
 
 
